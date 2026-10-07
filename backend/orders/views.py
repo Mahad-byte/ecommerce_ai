@@ -5,6 +5,7 @@ from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.viewsets import ReadOnlyModelViewSet
+from config.emails import send_order_confirmation_email
 
 from cart.models import Cart
 
@@ -115,5 +116,6 @@ class OrderViewSet(ReadOnlyModelViewSet):
                 product.save(update_fields=['stock'])
             cart, _ = Cart.objects.get_or_create(user=request.user)
             cart.items.all().delete()
+            send_order_confirmation_email(order)
 
         return Response(OrderSerializer(order).data)
