@@ -30,6 +30,8 @@ STOPWORDS = {
     'between', 'max', 'maximum', 'min', 'minimum', 'cheapest', 'priciest',
     'expensive', 'affordable', 'tops', 'range', 'least', 'most', 'lowest',
     'highest', 'near', 'roughly', 'approx', 'approximately',
+    'fall', 'falls', 'falling', 'within', 'dollors', 'dollars', 'usd', 'bucks',
+    'priced', 'costs', 'costing', 'worth',
 }
 
 # A money amount: "$50", "1,200", "2k", "49.99" — group 1: digits, group 2: k-suffix
@@ -42,6 +44,16 @@ PRICE_BETWEEN_RE = re.compile(
 # "$20-$50" — first side must carry a $ so ranges like "5-6 items" don't match
 PRICE_RANGE_RE = re.compile(
     r'\$\s*(\d[\d,]*(?:\.\d+)?)\s*(k\b)?\s*[–—-]\s*\$?\s*(\d[\d,]*(?:\.\d+)?)\s*(k\b)?',
+    re.IGNORECASE,
+)
+# "100-150", "100 to 150" — only trusted when the message also talks about money
+PRICE_PLAIN_RANGE_RE = re.compile(
+    r'(?<![\d.])(\d[\d,]*(?:\.\d+)?)\s*(k\b)?\s*(?:-|–|—|to)\s*'
+    r'(\d[\d,]*(?:\.\d+)?)\s*(k\b)?(?![\d])',
+    re.IGNORECASE,
+)
+MONEY_HINT_RE = re.compile(
+    r'\$|dollar|dollor|usd|buck|price|range|budget|cost|under|between|fall|within',
     re.IGNORECASE,
 )
 PRICE_AROUND_RE = re.compile(
@@ -93,6 +105,11 @@ def parse_price_intent(lowered):
     if match := PRICE_BETWEEN_RE.search(lowered):
         min_price, max_price = sorted([read_amount(match, 1), read_amount(match, 3)])
     elif match := PRICE_RANGE_RE.search(lowered):
+        min_price, max_price = sorted([read_amount(match, 1), read_amount(match, 3)])
+    elif (match := PRICE_PLAIN_RANGE_RE.search(lowered)) and (
+        MONEY_HINT_RE.search(lowered)
+        or max(read_amount(match, 1), read_amount(match, 3)) >= 20  # "5-6 items" is not a price
+    ):
         min_price, max_price = sorted([read_amount(match, 1), read_amount(match, 3)])
     elif match := PRICE_AROUND_RE.search(lowered):
         center = read_amount(match, 1)
@@ -182,17 +199,27 @@ class ChatView(APIView):
                 matches = named + list(rest)
             else:
                 matches = list(queryset.filter(any_query)[:10])
-        elif max_price is not None or min_price is not None:
+
+        has_price_filter = max_price is not None or min_price is not None
+        if not matches and has_price_filter:
+            # keywords were noise (or matched nothing): answer from the price filter alone
             order = '-price' if wants_priciest else 'price'
             matches = list(queryset.order_by(order)[:10])
-        else:
+        elif not matches and not keywords:
             matches = list(Product.objects.select_related('category')[:8])
+
+        total_in_filter = queryset.count() if has_price_filter else None
 
         catalog_lines = '\n'.join(
             f'- {p.name} | ${p.price} | category: {p.category.name} | '
             f'stock: {p.stock} | {p.description}'
             for p in matches
         ) or '- (no products matched this request)'
+        if total_in_filter:
+            catalog_lines += (
+                f'\n(The store has {total_in_filter} products in this price range; '
+                f'the list above shows {len(matches)} of them.)'
+            )
 
         category_lines = '\n'.join(
             f'- {c.name} ({c.product_count} products)'
